@@ -17,31 +17,29 @@ class Journal:
         self.database = database
 
     def record_signal(self, signal: Signal) -> None:
-        payload = {
-            "metrics": dict(signal.metadata),
-            "reasons": list(signal.reasons),
-            "penalties": dict(signal.penalties),
-            "entry_hint": signal.entry_hint,
-            "stop_hint": signal.stop_hint,
-        }
+        reasons_text = "\n".join(signal.reasons)
         self.database.record_signal(
             symbol=signal.symbol,
-            ts=signal.ts.isoformat(),
-            signal_type=signal.signal_type,
-            score=signal.score,
-            strength=signal.strength,
-            metadata=json.dumps(payload),
+            run_ts=signal.run_ts.isoformat(),
+            cycle_id=signal.cycle_id,
+            base_score=signal.base_score,
+            ai_adj_score=signal.ai_adj_score,
+            final_score=signal.final_score,
+            rank=signal.rank,
+            reasons_text=reasons_text,
+            rules_passed_json=json.dumps(signal.rules_passed),
+            features_json=json.dumps(signal.features),
         )
 
     def record_ai(self, overlay: AIOverlay) -> None:
         metadata_json = json.dumps(overlay.metadata)
-        self.database.record_ai_overlay(
+        self.database.record_ai_provenance(
             symbol=overlay.symbol,
-            ts=overlay.ts.isoformat(),
-            sentiment=overlay.sentiment,
-            regime=overlay.regime,
-            approved=overlay.approved,
-            metadata=metadata_json,
+            run_ts=overlay.ts.isoformat(),
+            source=overlay.regime,
+            sentiment_score=overlay.sentiment,
+            sentiment_label="approved" if overlay.approved else "blocked",
+            meta_json=metadata_json,
         )
 
     def log_cycle(self, payload: Mapping[str, float | str]) -> None:

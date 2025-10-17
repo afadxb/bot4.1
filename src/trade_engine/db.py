@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
@@ -15,41 +16,6 @@ MIGRATIONS: tuple[str, ...] = (
         sector TEXT,
         enabled INTEGER DEFAULT 1,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS bars_cache (
-        symbol TEXT,
-        timeframe TEXT,
-        ts DATETIME,
-        open REAL,
-        high REAL,
-        low REAL,
-        close REAL,
-        volume REAL,
-        PRIMARY KEY (symbol, timeframe, ts)
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS signals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT,
-        ts DATETIME,
-        signal_type TEXT,
-        score REAL,
-        strength REAL,
-        metadata TEXT
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS ai_overlays (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT,
-        ts DATETIME,
-        sentiment REAL,
-        regime TEXT,
-        approved INTEGER DEFAULT 0,
-        metadata TEXT
     );
     """,
     """
@@ -69,16 +35,6 @@ MIGRATIONS: tuple[str, ...] = (
     );
     """,
     """
-    CREATE TABLE IF NOT EXISTS risk_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts DATETIME DEFAULT CURRENT_TIMESTAMP,
-        symbol TEXT,
-        event_type TEXT,
-        severity TEXT,
-        message TEXT
-    );
-    """,
-    """
     CREATE TABLE IF NOT EXISTS journals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +44,8 @@ MIGRATIONS: tuple[str, ...] = (
     );
     """,
 )
+
+MIGRATIONS_DIR = Path(__file__).with_name("storage").joinpath("migrations")
 
 
 class Database:
@@ -104,6 +62,9 @@ class Database:
         cur = self._conn.cursor()
         for migration in MIGRATIONS:
             cur.executescript(migration)
+        if MIGRATIONS_DIR.exists():
+            for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+                cur.executescript(path.read_text())
         self._conn.commit()
 
     @contextlib.contextmanager
@@ -113,6 +74,7 @@ class Database:
         finally:
             self._conn.commit()
 
+    # ------------------------------------------------------------------ watchlist helpers
     def fetch_watchlist(self, limit: Optional[int] = None) -> list[sqlite3.Row]:
         query = "SELECT symbol, name, sector FROM watchlist WHERE enabled = 1 ORDER BY symbol"
         if limit:
@@ -134,38 +96,70 @@ class Database:
         with self.connection() as conn:
             conn.executemany(sql, entries)
 
+    # ------------------------------------------------------------------ signal capture
     def record_signal(
         self,
+        *,
         symbol: str,
-        ts: str,
-        signal_type: str,
-        score: float,
-        strength: float,
-        metadata: str,
+        run_ts: str,
+        cycle_id: str,
+        base_score: float,
+        ai_adj_score: float,
+        final_score: float,
+        rank: int | None,
+        reasons_text: str,
+        rules_passed_json: str,
+        features_json: str,
     ) -> None:
         sql = (
-            "INSERT INTO signals (symbol, ts, signal_type, score, strength, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO signals (symbol, run_ts, features_json, rules_passed_json, base_score, ai_adj_score, final_score, rank, reasons_text, cycle_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         with self.connection() as conn:
-            conn.execute(sql, (symbol, ts, signal_type, score, strength, metadata))
+            conn.execute(
+                sql,
+                (
+                    symbol,
+                    run_ts,
+                    features_json,
+                    rules_passed_json,
+                    base_score,
+                    ai_adj_score,
+                    final_score,
+                    rank,
+                    reasons_text,
+                    cycle_id,
+                ),
+            )
 
-    def record_ai_overlay(
+    def record_ai_provenance(
         self,
+        *,
         symbol: str,
-        ts: str,
-        sentiment: float,
-        regime: str,
-        approved: bool,
-        metadata: str,
+        run_ts: str,
+        source: str,
+        sentiment_score: float,
+        sentiment_label: str,
+        meta_json: str,
     ) -> None:
         sql = (
-            "INSERT INTO ai_overlays (symbol, ts, sentiment, regime, approved, metadata) "
+            "INSERT INTO ai_provenance (symbol, run_ts, source, sentiment_score, sentiment_label, meta_json) "
             "VALUES (?, ?, ?, ?, ?, ?)"
         )
         with self.connection() as conn:
-            conn.execute(sql, (symbol, ts, sentiment, regime, int(approved), metadata))
+            conn.execute(
+                sql,
+                (
+                    symbol,
+                    run_ts,
+                    source,
+                    sentiment_score,
+                    sentiment_label,
+                    meta_json,
+                ),
+            )
 
+    # ------------------------------------------------------------------ trade journal
     def record_trade(
         self,
         symbol: str,
@@ -196,19 +190,27 @@ class Database:
         with self.connection() as conn:
             conn.execute(sql, ("closed", pnl, notes, trade_id))
 
-    def record_risk_event(self, symbol: str, event_type: str, severity: str, message: str) -> None:
-        sql = (
-            "INSERT INTO risk_events (symbol, event_type, severity, message) "
-            "VALUES (?, ?, ?, ?)"
-        )
+    # ------------------------------------------------------------------ risk telemetry
+    def record_risk_event(
+        self,
+        *,
+        event_type: str,
+        session: str | None = None,
+        symbol: str | None = None,
+        value: float | None = None,
+        meta: dict[str, object] | None = None,
+    ) -> None:
+        sql = "INSERT INTO risk_events (session, type, symbol, value, meta_json) VALUES (?, ?, ?, ?, ?)"
+        payload = json.dumps(meta or {})
         with self.connection() as conn:
-            conn.execute(sql, (symbol, event_type, severity, message))
+            conn.execute(sql, (session, event_type, symbol, value, payload))
 
     def log(self, category: str, message: str, payload: str = "") -> None:
         sql = "INSERT INTO journals (category, message, payload) VALUES (?, ?, ?)"
         with self.connection() as conn:
             conn.execute(sql, (category, message, payload))
 
+    # ------------------------------------------------------------------ analytics
     def get_open_trades(self) -> list[sqlite3.Row]:
         with self.connection() as conn:
             cur = conn.execute("SELECT * FROM trades WHERE status = 'open'")
@@ -221,3 +223,18 @@ class Database:
             )
             pnl, count = cur.fetchone()
             return {"realized_pnl": float(pnl or 0.0), "closed_trades": float(count or 0)}
+
+    def get_latest_equity(self) -> dict[str, float] | None:
+        sql = (
+            "SELECT starting_equity, realized_pnl, unrealized_pnl FROM metrics_equity ORDER BY ts DESC LIMIT 1"
+        )
+        with self.connection() as conn:
+            cur = conn.execute(sql)
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "starting_equity": float(row["starting_equity"]),
+                "realized_pnl": float(row["realized_pnl"]),
+                "unrealized_pnl": float(row["unrealized_pnl"]),
+            }

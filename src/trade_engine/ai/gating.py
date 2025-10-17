@@ -1,9 +1,10 @@
-"""Optional AI overlays for sentiment/regime gating."""
+"""Optional AI overlays for sentiment and regime gating layers."""
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable, Mapping
 
@@ -54,7 +55,11 @@ class AIGating:
         regime = self.regime_model.classify(features)
 
         approved = True
-        metadata: dict[str, float] = {"sentiment": sentiment, "signal_score": signal.score}
+        metadata: dict[str, float] = {
+            "sentiment": sentiment,
+            "signal_base_score": signal.base_score,
+            "signal_final_score": signal.final_score,
+        }
         if require_positive_sentiment and sentiment <= 0:
             approved = False
         if require_favorable_regime and regime == "volatile" and math.fabs(features.get("volatility", 0.0)) > 2:
@@ -68,3 +73,75 @@ class AIGating:
             approved=approved,
             metadata=metadata,
         )
+
+
+def _decay_sentiment(raw: float, age_minutes: float, decay_hours: float) -> float:
+    half_life_minutes = max(1.0, decay_hours * 60)
+    decay_factor = math.exp(-age_minutes / half_life_minutes)
+    return raw * decay_factor
+
+
+def adjust_scores(
+    signals: list[Signal],
+    provenance_store,
+    *,
+    decay_hours: float = 12.0,
+    min_headlines: int = 1,
+    weak_setup_threshold: float = 0.55,
+) -> list[Signal]:
+    """Apply FinBERT sentiment overlays and persist provenance.
+
+    Args:
+        signals: Ranked signals awaiting AI adjustments.
+        provenance_store: Persistence layer exposing ``record_ai_provenance``.
+        decay_hours: Exponential decay horizon for sentiment scores.
+        min_headlines: Minimum catalysts before trusting sentiment fully.
+        weak_setup_threshold: Score threshold for soft veto consideration.
+    """
+
+    adjusted: list[Signal] = []
+    for signal in signals:
+        features = signal.features
+        avg_sentiment = float(features.get("avg_sentiment", 0.0) or 0.0)
+        age_minutes = float(features.get("fresh_catalyst_minutes", 0.0) or 0.0)
+        headline_count = int(features.get("headline_count", 0))
+
+        decayed = _decay_sentiment(avg_sentiment, age_minutes, decay_hours)
+        if headline_count < min_headlines:
+            decayed *= 0.5
+
+        ai_adj = signal.base_score
+        updated = signal
+        sentiment_label = "neutral"
+
+        if decayed < -0.4 and signal.base_score <= weak_setup_threshold:
+            ai_adj = max(0.0, signal.base_score * 0.4)
+            updated = replace(signal, reasons=signal.reasons + ("ai_soft_veto",))
+            sentiment_label = "soft_veto"
+        else:
+            ai_adj = max(0.0, min(1.0, signal.base_score + decayed * 0.1))
+            sentiment_label = "bullish" if decayed > 0 else "bearish" if decayed < 0 else "neutral"
+
+        final_score = ai_adj
+        updated = updated.with_scores(ai_adj_score=ai_adj, final_score=final_score)
+        adjusted.append(updated)
+
+        provenance_store.record_ai_provenance(
+            symbol=signal.symbol,
+            run_ts=signal.run_ts.isoformat(),
+            source="finbert",
+            sentiment_score=decayed,
+            sentiment_label=sentiment_label,
+            meta_json=json.dumps(
+                {
+                    "raw_sentiment": avg_sentiment,
+                    "decayed": decayed,
+                    "age_minutes": age_minutes,
+                    "headline_count": headline_count,
+                    "base_score": signal.base_score,
+                    "ai_adj_score": ai_adj,
+                }
+            ),
+        )
+
+    return adjusted

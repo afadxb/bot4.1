@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Mapping
@@ -33,6 +33,10 @@ class Signal:
     score: float
     strength: float
     metadata: Mapping[str, float]
+    reasons: tuple[str, ...] = ()
+    penalties: Mapping[str, float] = field(default_factory=dict)
+    entry_hint: float | None = None
+    stop_hint: float | None = None
 
 
 @dataclass(slots=True)

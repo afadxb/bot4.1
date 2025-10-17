@@ -18,8 +18,9 @@ class TradeManager:
         self.database = database
         self.executor = executor
 
-    def execute(self, intents: Iterable[TradeIntent], open_positions: Iterable[Position]) -> None:
+    def execute(self, intents: Iterable[TradeIntent], open_positions: Iterable[Position]) -> int:
         positions_by_symbol = {pos.symbol: pos for pos in open_positions}
+        filled = 0
         for intent in intents:
             existing = positions_by_symbol.get(intent.symbol)
             action = "BUY" if intent.side.value == "long" else "SELL"
@@ -48,3 +49,5 @@ class TradeManager:
                 message=f"Placed trade {trade_id} for {intent.symbol}",
                 payload=json.dumps(intent.metadata),
             )
+            filled += 1
+        return filled

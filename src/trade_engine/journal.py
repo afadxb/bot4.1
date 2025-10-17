@@ -17,14 +17,20 @@ class Journal:
         self.database = database
 
     def record_signal(self, signal: Signal) -> None:
-        metadata_json = json.dumps(signal.metadata)
+        payload = {
+            "metrics": dict(signal.metadata),
+            "reasons": list(signal.reasons),
+            "penalties": dict(signal.penalties),
+            "entry_hint": signal.entry_hint,
+            "stop_hint": signal.stop_hint,
+        }
         self.database.record_signal(
             symbol=signal.symbol,
             ts=signal.ts.isoformat(),
             signal_type=signal.signal_type,
             score=signal.score,
             strength=signal.strength,
-            metadata=metadata_json,
+            metadata=json.dumps(payload),
         )
 
     def record_ai(self, overlay: AIOverlay) -> None:

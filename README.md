@@ -49,8 +49,11 @@ components or live execution.
 ## Development Notes
 
 * Real IBKR connectivity can be plugged in by swapping the stub `IBKRClient` and
-  enabling `--live` in the CLI.
+  enabling `--live` in the CLI. Sample CLI commands and parameters are documented in
+  [`.env.example`](.env.example) for quick reference.
 * AI gating is optional and can be toggled with `--enable-ai`.  Sentiment/regime models
   are deterministic placeholders ready to be replaced by upstream services.
 * The SQLite schema is migration friendly and can be extended with additional signals or
   analytics tables as new strategies are introduced.
+* Operational expectations for dashboards, observability, rollout, and testing are
+  documented in [`docs/phase2_operational_spec.md`](docs/phase2_operational_spec.md).

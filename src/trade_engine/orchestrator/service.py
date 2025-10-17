@@ -35,7 +35,7 @@ class Orchestrator:
         self.database = Database(config.database_path)
         self.ibkr = IBKRClient()
         self.executor = Executor(dry_run=config.dry_run)
-        self.trade_manager = TradeManager(self.database, self.executor)
+        self.trade_manager = TradeManager(self.database, self.executor, config.risk, config.execution)
         self.journal = Journal(self.database)
         self.risk_manager = RiskManager(config.risk, self.database)
         self.market_clock = MarketClock(config.orchestrator.timezone)

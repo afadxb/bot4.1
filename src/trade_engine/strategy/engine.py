@@ -74,33 +74,38 @@ class StrategyEngine:
             value = rule.evaluate(features)
             contributions[rule.name] = value * rule.weight
             score += contributions[rule.name]
-        strength = sum(abs(value) for value in contributions.values())
         LOGGER.debug("Aggregated score for %s -> %s", symbol, score)
+        base_score = max(0.0, min(1.0, (score + 1) / 2))
         return Signal(
             symbol=symbol,
-            ts=datetime.utcnow(),
-            signal_type="composite",
-            score=score,
-            strength=strength,
-            metadata=contributions,
+            run_ts=datetime.utcnow(),
+            cycle_id="strategy_engine",
+            entry_hint=features.get("last_close"),
+            stop_hint=features.get("last_close", 0.0) - features.get("atr", 0.0),
+            base_score=base_score,
+            ai_adj_score=base_score,
+            final_score=base_score,
+            reasons=tuple(contributions.keys()),
+            rules_passed={name: value >= 0 for name, value in contributions.items()},
+            features={k: float(v) for k, v in features.items()},
         )
 
     def rank(self, signals: Iterable[tuple[str, Mapping[str, float]]]) -> list[tuple[Signal, TradeIntent]]:
         scored: list[tuple[Signal, TradeIntent]] = []
         for symbol, features in signals:
             signal = self.evaluate(symbol, features)
-            side = Side.LONG if signal.score >= 0 else Side.SHORT
-            quantity = abs(signal.score) * 10
+            side = Side.LONG if signal.final_score >= 0.5 else Side.SHORT
+            quantity = signal.final_score * 10
             intent = TradeIntent(
                 symbol=symbol,
                 side=side,
-                confidence=min(1.0, abs(signal.score)),
+                confidence=signal.final_score,
                 quantity=quantity,
                 entry=features.get("last_close", 0.0),
                 stop=features.get("last_close", 0.0) - features.get("atr", 0.0) * (1 if side == Side.LONG else -1),
                 target=features.get("last_close", 0.0) + features.get("atr", 0.0) * (2 if side == Side.LONG else -2),
-                metadata=signal.metadata,
+                metadata=signal.features,
             )
             scored.append((signal, intent))
-        scored.sort(key=lambda item: item[0].score, reverse=True)
+        scored.sort(key=lambda item: item[0].final_score, reverse=True)
         return scored

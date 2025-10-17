@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping, Sequence
 
-from ..ai.gating import AIGating
+from ..ai.gating import AIGating, adjust_scores
 from ..config import EngineConfig
 from ..data.hub import DataHub
 from ..db import Database
@@ -45,7 +45,7 @@ class IntradayContext:
 class IntradayResult:
     cycle_id: str
     signals: Sequence[Signal]
-    approved: Sequence[TradeIntent]
+    approved: Sequence[Signal]
     rejected: Mapping[str, Sequence[str]]
     flatten_required: bool
     summary: Mapping[str, float | int | str]
@@ -93,13 +93,17 @@ def run_intraday_cycle(
         snapshot = ctx.feature_builder.build(symbol, bars, catalysts=headlines.get(symbol, ()))
         snapshots.append(snapshot)
 
-    decisions = ctx.strategy.evaluate(snapshots)
+    decisions = ctx.strategy.evaluate(snapshots, cycle_id=cycle_id)
+    if ctx.config.ai.finbert.enable:
+        adjusted_signals = adjust_scores([decision.signal for decision in decisions], ctx.database)
+        for decision, updated_signal in zip(decisions, adjusted_signals):
+            decision.signal = updated_signal
     signals = [decision.signal for decision in decisions]
     for signal in signals:
         ctx.journal.record_signal(signal)
 
     rejected: dict[str, list[str]] = {}
-    approved: list[TradeIntent] = []
+    approved_signals: list[Signal] = []
     processed = 0
     for decision in decisions:
         if decision.intent is None:
@@ -108,24 +112,25 @@ def run_intraday_cycle(
             break
         processed += 1
         intent = decision.intent
+        assessment, updated_signal = ctx.risk_manager.apply_guardrails(decision.signal)
+        decision.signal = updated_signal
+        if not assessment.allowed:
+            rejected.setdefault(updated_signal.symbol, []).extend(assessment.reasons)
+            continue
         if ctx.ai and ctx.config.ai.enable_gating:
             overlay = ctx.ai.evaluate(
-                symbol=intent.symbol,
+                symbol=decision.signal.symbol,
                 signal=decision.signal,
-                catalysts=headlines.get(intent.symbol, ()),
-                features=decision.signal.metadata | {"score": decision.signal.score},
+                catalysts=headlines.get(decision.signal.symbol, ()),
+                features={**{k: float(v) for k, v in decision.signal.features.items()}, "score": decision.signal.base_score},
                 require_positive_sentiment=ctx.config.ai.finbert.enable,
                 require_favorable_regime=False,
             )
             ctx.journal.record_ai(overlay)
             if not overlay.approved:
-                rejected.setdefault(intent.symbol, []).append("ai_gating")
+                rejected.setdefault(decision.signal.symbol, []).append("ai_gating")
                 continue
-        risk = ctx.risk_manager.check_trade(intent, open_positions)
-        if not risk.allowed:
-            rejected.setdefault(intent.symbol, []).extend(risk.reasons)
-            continue
-        approved.append(intent)
+        approved_signals.append(decision.signal)
 
     drawdown = ctx.risk_manager.check_drawdown()
     if not drawdown.allowed:
@@ -147,16 +152,43 @@ def run_intraday_cycle(
             summary=halt_summary,
         )
 
-    fills = ctx.trade_manager.execute(approved, open_positions)
-    session.trades_opened_today += fills
+    planned_orders = ctx.trade_manager.plan_orders(approved_signals, equity_snapshot=session.equity_snapshot)
+    pre_exec = ctx.risk_manager.pre_execution_checks(
+        planned_orders,
+        open_positions=open_positions,
+        trades_opened_today=session.trades_opened_today,
+        session=str(cycle_id),
+    )
+    if not pre_exec.allowed:
+        LOGGER.warning("Cycle %s: pre-execution guardrails blocked orders", cycle_id)
+        summary = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "signals": len(signals),
+            "approved": len(approved_signals),
+            "status": "risk_block",
+            "reasons": ",".join(pre_exec.reasons),
+        }
+        ctx.journal.log_cycle(summary)
+        return IntradayResult(
+            cycle_id=cycle_id,
+            signals=signals,
+            approved=[],
+            rejected=rejected,
+            flatten_required=False,
+            summary=summary,
+        )
+
+    execution_results = ctx.trade_manager.execute(planned_orders)
+    submitted = len([result for result in execution_results if result.get("status") == "submitted"])
+    session.trades_opened_today += submitted
     exposure = ctx.risk_manager.assess_portfolio(open_positions)
     session.equity_snapshot = dict(exposure)
 
     summary = {
         "timestamp": datetime.utcnow().isoformat(),
         "signals": len(signals),
-        "approved": len(approved),
-        "fills": fills,
+        "approved": len(approved_signals),
+        "fills": submitted,
     }
     summary.update({f"portfolio_{key}": value for key, value in exposure.items()})
     ctx.journal.log_cycle(summary)
@@ -164,7 +196,7 @@ def run_intraday_cycle(
     return IntradayResult(
         cycle_id=cycle_id,
         signals=signals,
-        approved=approved,
+        approved=approved_signals,
         rejected=rejected,
         flatten_required=False,
         summary=summary,

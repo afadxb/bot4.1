@@ -70,7 +70,7 @@ class DataHub:
         with self._database.connection() as conn:
             cur = conn.execute(
                 "SELECT ts, open, high, low, close, volume FROM bars_cache "
-                "WHERE symbol = ? AND timeframe = ? ORDER BY ts DESC LIMIT ?",
+                "WHERE symbol = ? AND tf = ? ORDER BY ts DESC LIMIT ?",
                 (symbol, timeframe, lookback),
             )
             rows = cur.fetchall()
@@ -110,7 +110,7 @@ class DataHub:
         ]
         with self._database.connection() as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO bars_cache (symbol, timeframe, ts, open, high, low, close, volume)"
+                "INSERT OR REPLACE INTO bars_cache (symbol, tf, ts, open, high, low, close, volume)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 payload,
             )
@@ -122,7 +122,7 @@ class DataHub:
         cutoff = datetime.utcnow() - timedelta(minutes=retention)
         with self._database.connection() as conn:
             conn.execute(
-                "DELETE FROM bars_cache WHERE timeframe = ? AND ts < ?",
+                "DELETE FROM bars_cache WHERE tf = ? AND ts < ?",
                 (timeframe, cutoff.isoformat()),
             )
 

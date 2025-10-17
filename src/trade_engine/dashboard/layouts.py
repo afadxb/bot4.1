@@ -18,21 +18,21 @@ class DashboardData:
     def signals(self) -> List[dict[str, object]]:
         with self.database.connection() as conn:
             rows = conn.execute(
-                "SELECT symbol, ts, signal_type, score, strength, metadata FROM signals ORDER BY ts DESC LIMIT 200"
+                "SELECT symbol, run_ts, base_score, ai_adj_score, final_score, rank, reasons_text, cycle_id FROM signals ORDER BY run_ts DESC LIMIT 200"
             ).fetchall()
         return [dict(row) for row in rows]
 
     def ai_overlays(self) -> List[dict[str, object]]:
         with self.database.connection() as conn:
             rows = conn.execute(
-                "SELECT symbol, ts, sentiment, regime, approved, metadata FROM ai_overlays ORDER BY ts DESC LIMIT 200"
+                "SELECT symbol, run_ts, source, sentiment_score, sentiment_label, meta_json FROM ai_provenance ORDER BY run_ts DESC LIMIT 200"
             ).fetchall()
         return [dict(row) for row in rows]
 
     def risk_events(self) -> List[dict[str, object]]:
         with self.database.connection() as conn:
             rows = conn.execute(
-                "SELECT ts, symbol, event_type, severity, message FROM risk_events ORDER BY ts DESC LIMIT 200"
+                "SELECT ts, session, type, symbol, value, meta_json FROM risk_events ORDER BY ts DESC LIMIT 200"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -47,8 +47,8 @@ class DashboardData:
 def export_json(database: Database, path: str | Path) -> None:
     payload: dict[str, Iterable[dict[str, str | float]]] = {}
     queries = {
-        "signals": "SELECT * FROM signals ORDER BY ts DESC LIMIT 200",
-        "ai_overlays": "SELECT * FROM ai_overlays ORDER BY ts DESC LIMIT 200",
+        "signals": "SELECT * FROM signals ORDER BY run_ts DESC LIMIT 200",
+        "ai_provenance": "SELECT * FROM ai_provenance ORDER BY run_ts DESC LIMIT 200",
         "risk_events": "SELECT * FROM risk_events ORDER BY ts DESC LIMIT 200",
         "trades": "SELECT * FROM trades ORDER BY opened_at DESC LIMIT 200",
     }

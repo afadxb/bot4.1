@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intraday-trade-engine"
+version = "0.1.0"
+description = "Deterministic intraday trading engine with IBKR stubs and AI gating"
+authors = [{name = "AutoDev"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
